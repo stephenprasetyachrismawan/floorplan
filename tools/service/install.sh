@@ -3,21 +3,28 @@
 # the map is served at http://127.0.0.1:<port>/ and watch.mjs keeps it current as the code changes.
 #
 #   tools/service/install.sh <project-root> [--port 4378] [--name <name>] [--full-at 03:30|off] [--windows-autostart]
-#   tools/service/install.sh --uninstall --name <name>
+#   tools/service/install.sh <repo> --follow origin/preprod --worktree <path> [--port 4378] [--name <name>]
+#   tools/service/install.sh --uninstall --name <name> [--worktree <path>]
+#
+# --follow maps a branch instead of a checkout you work in: it adds <path> as a detached git worktree of <repo> at
+# that branch (copying <repo>/.graphifyignore), and the service fetches the branch and moves the worktree to it,
+# so the map always shows what is on the branch. --uninstall --worktree also removes that worktree.
 #
 # --windows-autostart (WSL only): adds a hidden entry to the Windows Startup folder that starts this WSL distro at
 # Windows sign-in, so systemd (and this service) is running without opening a terminal.
 set -euo pipefail
 
-port=4378; name=""; full_at="03:30"; win=0; uninstall=0; root=""
+port=4378; name=""; full_at="03:30"; win=0; uninstall=0; root=""; follow=""; worktree=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) port="$2"; shift 2 ;;
     --name) name="$2"; shift 2 ;;
     --full-at) full_at="$2"; shift 2 ;;
     --windows-autostart) win=1; shift ;;
+    --follow) follow="$2"; shift 2 ;;
+    --worktree) worktree="$2"; shift 2 ;;
     --uninstall) uninstall=1; shift ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) root="$1"; shift ;;
   esac
 done
@@ -29,11 +36,28 @@ if [ "$uninstall" = 1 ]; then
   rm -f "$unit_dir/floorplan-$name.service"
   systemctl --user daemon-reload
   echo "removed floorplan-$name.service"
+  if [ -n "$worktree" ] && [ -d "$worktree" ]; then
+    git -C "$worktree" worktree remove --force "$worktree" && echo "removed worktree $worktree"
+  fi
   exit 0
 fi
 
 [ -n "$root" ] || { echo "usage: $0 <project-root> [--port N] [--name NAME]" >&2; exit 1; }
 root="$(cd "$root" && pwd)"
+follow_args=""
+if [ -n "$follow" ]; then
+  [ -n "$worktree" ] || { echo "--follow needs --worktree <path>" >&2; exit 1; }
+  case "$follow" in */*) ;; *) echo "--follow takes <remote>/<branch>, e.g. origin/preprod" >&2; exit 1 ;; esac
+  if [ ! -e "$worktree" ]; then
+    git -C "$root" fetch --quiet "${follow%%/*}" "${follow#*/}"
+    mkdir -p "$(dirname "$worktree")"
+    git -C "$root" worktree add --quiet --detach "$worktree" "refs/remotes/$follow"
+    echo "added worktree $worktree at $follow ($(git -C "$worktree" rev-parse --short HEAD))"
+  fi
+  [ -f "$root/.graphifyignore" ] && cp "$root/.graphifyignore" "$worktree/.graphifyignore"
+  root="$(cd "$worktree" && pwd)"
+  follow_args=" --follow $follow"
+fi
 [ -n "$name" ] || name="$(basename "$root" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-\n' '-')"
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 skill="$here/skills/floorplan"
@@ -48,7 +72,7 @@ After=default.target
 
 [Service]
 WorkingDirectory=$root
-ExecStart=$node_bin $skill/scripts/watch.mjs $root --serve --port $port --full-at $full_at
+ExecStart=$node_bin $skill/scripts/watch.mjs $root --serve --port $port --full-at $full_at$follow_args
 Restart=always
 RestartSec=10
 Environment=PATH=$(dirname "$node_bin"):$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
