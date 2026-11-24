@@ -13,7 +13,7 @@ export const GRAPHIFY_DIR = 'graphify-out';
 // graphify relation -> floorplan link kind. Relations inside one file (method, contains, defines, rationale_for)
 // and imports (the scan resolves those itself) are left out.
 const RELATION_KIND = { calls: 'call', inherits: 'inherit', uses: 'call', references: 'ref', shares_data_with: 'data' };
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 /** Where graphify keeps its graph for this root, or null when graphify hasn't run here. */
 export function graphifyFile(root) {
@@ -58,6 +58,9 @@ export function loadGraphify(root, cacheDir, { force = false } = {}) {
   for (const l of g.links || g.edges || []) {
     const kind = RELATION_KIND[l.relation];
     if (!kind) continue;
+    // graphify marks a cross-file call INFERRED when only the callee's name matched (no import behind it): on
+    // Python that ties `bool(x)` to any function named bool. Only what the code shows is drawn.
+    if (l.confidence && l.confidence !== 'EXTRACTED') continue;
     const a = fileOf.get(l.source), b = fileOf.get(l.target);
     if (!a || !b || a === b) continue;
     const k = `${a}\u0000${b}\u0000${kind}`;
