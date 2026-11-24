@@ -54,7 +54,7 @@
   --ease: cubic-bezier(.16, 1, .3, 1); --ease-io: cubic-bezier(.65, 0, .35, 1);
   --shadow-card: 0 1px 0 rgba(var(--ink), .035) inset, 0 12px 32px -20px rgba(0, 0, 0, .95);
   --shadow-float: 0 0 0 1px rgba(var(--ink), .05), 0 24px 64px -24px rgba(0, 0, 0, .9);
-  --k-import: #6e6e6e; --k-http: #7aa7ff; --k-call: #b49cff; --k-rpc: #8f9bff; --k-event: #f19ac7; --k-queue: #f0c36b; --k-data: #63d2b8; --k-config: #6b7280; --k-contains: #4a4a4a;
+  --k-import: #6e6e6e; --k-http: #7aa7ff; --k-call: #b49cff; --k-rpc: #8f9bff; --k-event: #f19ac7; --k-queue: #f0c36b; --k-data: #63d2b8; --k-config: #6b7280; --k-contains: #4a4a4a; --k-inherit: #ff9f5a; --k-model: #4fc3e0; --k-ref: #c9b458;
   --n-ui: #7cc4ff; --n-service: #b49cff; --n-worker: #f0c36b; --n-library: #6fd7a8; --n-feature: #8fb4ff; --n-data: #63d2b8; --n-config: #a3a3a3;
   --n-test: #f19ac7; --n-script: #f5a66b; --n-infra: #f28b8b; --n-external: #e3a6f0; --n-misc: #8b8b8b; --n-dir: #a3a3a3; --n-file: #a3a3a3;
   --n-module: #a3a3a3; --n-symbol: #c7b8ff; --n-route: #7aa7ff; --n-connector: #8b8b8b;
@@ -82,7 +82,7 @@
   --shadow-float: 0 0 0 1px rgba(0, 0, 0, .1), 0 20px 48px -22px rgba(0, 0, 0, .4);
   --shadow-lift: 0 16px 32px -18px rgba(0, 0, 0, .4);
   --shadow-deep: 0 20px 48px -22px rgba(0, 0, 0, .4);
-  --k-import: #50555c; --k-http: #1f5fd6; --k-call: #6a45d6; --k-rpc: #4450cf; --k-event: #c43a85; --k-queue: #a8710c; --k-data: #0b7f6b; --k-config: #4f5661; --k-contains: #8d8d8d;
+  --k-import: #50555c; --k-http: #1f5fd6; --k-call: #6a45d6; --k-rpc: #4450cf; --k-event: #c43a85; --k-queue: #a8710c; --k-data: #0b7f6b; --k-config: #4f5661; --k-contains: #8d8d8d; --k-inherit: #b85a12; --k-model: #0a7d99; --k-ref: #7d6a0d;
   --n-ui: #1f7ac4; --n-service: #7a5ad8; --n-worker: #a8710c; --n-library: #1a8a5b; --n-feature: #3b6fd1; --n-data: #0f8a76; --n-config: #666666;
   --n-test: #c43c86; --n-script: #c06a1d; --n-infra: #c94a4a; --n-external: #a24dbb; --n-misc: #666666; --n-dir: #666666; --n-file: #666666;
   --n-module: #666666; --n-symbol: #6a55c4; --n-route: #2f6fe0; --n-connector: #666666;
@@ -645,10 +645,10 @@ const NS = 'http://www.w3.org/2000/svg';
 const $ = (s) => document.querySelector(s);
 const svg = $('#svg'), vp = $('#viewport'), panel = $('#panel');
 const elk = new ELK();
-const KINDS = ['import', 'http', 'call', 'rpc', 'event', 'queue', 'data', 'config'];
+const KINDS = ['import', 'http', 'call', 'rpc', 'event', 'queue', 'data', 'config', 'inherit', 'model', 'ref'];
 // connection names: plain by default, developer terms when "Show technical detail" is on
-const KIND_TECH = { contains: 'Contains', import: 'Imports', http: 'HTTP', call: 'Calls', rpc: 'RPC', event: 'Events', queue: 'Queues', data: 'Data', config: 'Config' };
-const KIND_PLAIN = { contains: 'Contains', import: 'Uses', http: 'Web requests', call: 'Calls', rpc: 'Calls', event: 'Events', queue: 'Background jobs', data: 'Reads & writes data', config: 'Settings' };
+const KIND_TECH = { contains: 'Contains', import: 'Imports', http: 'HTTP', call: 'Calls', rpc: 'RPC', event: 'Events', queue: 'Queues', data: 'Data', config: 'Config', inherit: 'Inherits', model: 'Uses model', ref: 'XML refs' };
+const KIND_PLAIN = { contains: 'Contains', import: 'Uses', http: 'Web requests', call: 'Calls', rpc: 'Calls', event: 'Events', queue: 'Background jobs', data: 'Reads & writes data', config: 'Settings', inherit: 'Extends', model: 'Works on records', ref: 'Opens / refers to' };
 const KIND_LABEL = new Proxy({}, { get: (_, k) => (technical() ? KIND_TECH : KIND_PLAIN)[k] || k });
 let technicalFlag = false;
 const technical = () => technicalFlag;
@@ -1756,6 +1756,7 @@ function itemPanel(item, viaConnector) {
   } else if (i.type === 'file' || i.type === 'module') {
     const f = i.f, fid = 'f:' + f.p, url = editorUrl(f.p);
     if (f.note) html += `<div class="callout">${h(f.note)}</div>`;
+    if (f.g) html += `<div class="td" style="margin-top:6px">graphify community: <b>${h(f.g)}</b></div>`;
     if (f.tooLarge) html += `<div class="callout">Too big for Floorplan to read, so what it uses, its endpoints and any secrets in it weren’t checked. Ask Claude or Codex to update the floorplan with a bigger file limit to include it.</div>`;
     html += pathBox(f.p);
     if (url) actions.push(`<a class="btn soft" href="${hk(url)}">${iconI('open')}Open in editor</a>`);
@@ -2502,7 +2503,8 @@ window.Floorplan = Object.freeze({
   store,
   on(event, fn) { (ext.listeners[event] ||= []).push(fn); },
 });
-technicalFlag = !!store.get('technical', false);
+// a map written for developers opens in technical detail unless the viewer turned it off
+technicalFlag = !!store.get('technical', G.meta?.audience === 'developers');
 
 const init = readHash();
 state.container = init.v; state.selected = init.s;

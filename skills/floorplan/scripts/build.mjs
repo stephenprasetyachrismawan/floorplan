@@ -18,6 +18,7 @@ import { buildPlanHealth } from './lib/blueprint.mjs';
 import { buildScreens } from './lib/screens.mjs';
 import { writeClaudeMd } from './lib/claudemd.mjs';
 import { detectAgent } from './lib/agent.mjs';
+import { loadGraphify } from './lib/graphify.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(HERE, '..');
@@ -46,7 +47,7 @@ const archFile = path.resolve(args.arch || path.join(outDir, 'architecture.json'
 const scanFile = path.resolve(args.scan || path.join(outDir, '.cache', 'scan.json'));
 
 export const NODE_KINDS = ['ui', 'service', 'worker', 'library', 'feature', 'data', 'config', 'test', 'script', 'infra', 'external'];
-export const EDGE_KINDS = ['import', 'call', 'http', 'rpc', 'event', 'queue', 'data', 'config'];
+export const EDGE_KINDS = ['import', 'call', 'http', 'rpc', 'event', 'queue', 'data', 'config', 'inherit', 'model', 'ref'];
 
 const errors = [];
 const warnings = [];
@@ -269,6 +270,19 @@ routesIn.forEach((r, i) => routeIdx.set(`${r.file}|${r.method}|${r.path}`, i));
 
 for (const e of scan.edges) if (includedSet.has(e.from) && includedSet.has(e.to)) addLink(`f:${e.from}`, `f:${e.to}`, 'import', { w: e.count || 1, names: e.names });
 for (const h of scan.http) if (includedSet.has(h.from) && includedSet.has(h.to)) addLink(`f:${h.from}`, `f:${h.to}`, 'http', { label: `${h.method} ${h.path}`, inferred: true, route: routeIdx.get(`${h.to}|${h.method}|${h.path}`), callLine: h.line });
+
+// graphify (graphify-out/graph.json, when the project has one): cross-file calls and inheritance it resolved,
+// and each file's community. Lifted once per graph.json change and cached (lib/graphify.mjs).
+let gfy = null;
+if (!args['no-graphify'] && !scan.blueprint) {
+  try { gfy = loadGraphify(root, path.join(outDir, '.cache')); } catch (e) { warn(`graphify-out/graph.json could not be read: ${e.message}`); }
+}
+let gfyLinks = 0;
+if (gfy) for (const e of gfy.links) {
+  if (!includedSet.has(e.from) || !includedSet.has(e.to)) continue;
+  gfyLinks++;
+  addLink(`f:${e.from}`, `f:${e.to}`, e.kind, { w: e.w, names: e.labels, inferred: true });
+}
 
 // externals: packages / hosts claimed by nodes
 const extIds = scan.externals.map((e) => e.id);
@@ -516,6 +530,7 @@ const describedFiles = included.filter((f) => fileDesc.get(f.path)?.d || f.desc)
 const describedRoutes = routesIn.filter((r) => routeDesc.get(routeKey(r))?.d || r.desc).length;
 const noSummary = nodes.filter((n) => n?.id && !isStr(n.summary)).map((n) => n.id);
 const reviewCount = [...fileDesc.values(), ...routeDesc.values()].filter((d) => d.review).length;
+if (gfy) report.push(`GRAPHIFY  ${gfyLinks} file links from graphify-out/graph.json (${fmtNum(gfy.nodes)} nodes, built at ${(gfy.commit || '?').slice(0, 8)}${gfy.ms != null ? `, lifted in ${(gfy.ms / 1000).toFixed(1)}s` : ''}), communities on ${Object.keys(gfy.community).filter((p) => includedSet.has(p)).length} files`);
 report.push(`DESCRIPTIONS  files ${describedFiles}/${included.length} · routes ${describedRoutes}/${routesIn.length} · modules ${nodes.length - noSummary.length}/${nodes.length}${reviewCount ? ` · ${reviewCount} need review (code changed)` : ''}`);
 if (noSummary.length) report.push(`  modules without a summary: ${noSummary.slice(0, 12).join(', ')}${noSummary.length > 12 ? '…' : ''}`);
 if (describedFiles < included.length || describedRoutes < routesIn.length || reviewCount) report.push(`  Run describe.mjs to get worksheets for the ${included.length - describedFiles} file(s) and ${routesIn.length - describedRoutes} route(s) still missing descriptions.`);
@@ -567,6 +582,7 @@ const graph = {
     ...(editor.template ? { editor: editor.template } : {}),
     ...(scan.blueprint ? { blueprint: { source: scan.blueprint.source, stack: scan.blueprint.stack, assumptions: scan.blueprint.assumptions } } : {}),
     repos: scan.repos.map(({ path: p, name, branch, head, remote }) => ({ path: p, name, branch, head, remote })),
+    ...(gfy ? { graphify: { commit: gfy.commit, nodes: gfy.nodes, links: gfyLinks, at: gfy.at } } : {}),
     counts: { files: included.length, loc: included.reduce((s, f) => s + f.loc, 0), unassigned: unassigned.length },
   },
   project: arch.project,
@@ -587,6 +603,7 @@ const graph = {
       ...(f.tooLarge ? { tooLarge: true } : {}),
       ...(d?.review ? { review: d.review } : {}),
       ...(f.h ? { h: f.h, sig: f.sig } : {}),
+      ...(gfy?.community[f.path] ? { g: gfy.community[f.path] } : {}),
       ...(f.symbols ? { s: f.symbols.map((s) => [s.name, s.kind, s.line, s.default ? 1 : 0, s.doc || '']) } : {}),
       ...(notes.has(f.path) ? notes.get(f.path) : {}),
     };
