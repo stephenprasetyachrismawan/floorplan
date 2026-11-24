@@ -1962,8 +1962,13 @@ export function buildHealth({ graph, scan, arch, root }) {
   };
   const perRepo = new Map(); // repo -> { guarded, open: [], guardCounts }
   const appWide = new Map(); // `${file}|${line}` -> an app-wide check and how many endpoints only it protects
+  // Odoo controllers: auth="user" (the default) means signed in; public and none routes are judged by the Odoo
+  // checks instead (lib/odoo-health.mjs looks at what they do with sudo()), so they're not listed twice
+  const odooRoutes = new Map((scan.routes || []).filter((r) => r.framework === 'odoo').map((r) => [`${r.file}|${r.line}|${r.method}|${r.path}`, r]));
   graph.routes.forEach((r, i) => {
-    const own = routeFinding.get(`${r.f}|${r.l}|${r.m}|${r.p}`) || routeFinding.get(`${r.f}|${r.l}|${r.m}`);
+    const odr = odooRoutes.get(`${r.f}|${r.l}|${r.m}|${r.p}`);
+    const own = odr ? { k: 'route', line: r.l, method: r.m, fn: odr.handler, ...(odr.odoo?.auth === 'user' ? { via: 'odoo', guard: 'auth="user"' } : { public: true }) }
+      : routeFinding.get(`${r.f}|${r.l}|${r.m}|${r.p}`) || routeFinding.get(`${r.f}|${r.l}|${r.m}`);
     const fnd = /\.cs$/.test(r.f) ? csFinding(own, r, cs) : own;
     if (!fnd) return; // framework we don't analyse: say nothing
     const gf = fileByPath.get(r.f);

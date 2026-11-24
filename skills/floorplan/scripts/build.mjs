@@ -18,6 +18,7 @@ import { buildPlanHealth } from './lib/blueprint.mjs';
 import { buildScreens } from './lib/screens.mjs';
 import { writeClaudeMd } from './lib/claudemd.mjs';
 import { detectAgent } from './lib/agent.mjs';
+import { loadGraphify } from './lib/graphify.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(HERE, '..');
@@ -46,7 +47,7 @@ const archFile = path.resolve(args.arch || path.join(outDir, 'architecture.json'
 const scanFile = path.resolve(args.scan || path.join(outDir, '.cache', 'scan.json'));
 
 export const NODE_KINDS = ['ui', 'service', 'worker', 'library', 'feature', 'data', 'config', 'test', 'script', 'infra', 'external'];
-export const EDGE_KINDS = ['import', 'call', 'http', 'rpc', 'event', 'queue', 'data', 'config'];
+export const EDGE_KINDS = ['import', 'call', 'http', 'rpc', 'event', 'queue', 'data', 'config', 'inherit', 'model', 'ref'];
 
 const errors = [];
 const warnings = [];
@@ -269,6 +270,25 @@ routesIn.forEach((r, i) => routeIdx.set(`${r.file}|${r.method}|${r.path}`, i));
 
 for (const e of scan.edges) if (includedSet.has(e.from) && includedSet.has(e.to)) addLink(`f:${e.from}`, `f:${e.to}`, 'import', { w: e.count || 1, names: e.names });
 for (const h of scan.http) if (includedSet.has(h.from) && includedSet.has(h.to)) addLink(`f:${h.from}`, `f:${h.to}`, 'http', { label: `${h.method} ${h.path}`, inferred: true, route: routeIdx.get(`${h.to}|${h.method}|${h.path}`), callLine: h.line });
+
+// Odoo (scan.odoo, lib/odoo.mjs): models, XML ids, manifests and the web client joined across files. Uses of Odoo's
+// own models go to the external node that claims the package "odoo" (odoo-arch.mjs adds one), when there is one.
+const odooCore = nodes.find((n) => n?.kind === 'external' && isStrArr(n.packages) && n.packages.some((p) => /^(\*:)?odoo$/.test(p)));
+for (const e of scan.odoo?.links || []) if (includedSet.has(e.from) && includedSet.has(e.to)) addLink(`f:${e.from}`, `f:${e.to}`, e.kind, { label: e.label, inferred: true });
+if (odooCore) for (const e of scan.odoo?.core || []) if (includedSet.has(e.from)) addLink(`f:${e.from}`, `n:${odooCore.id}`, e.kind, { label: e.model, inferred: true });
+
+// graphify (graphify-out/graph.json, when the project has one): cross-file calls and inheritance it resolved,
+// and each file's community. Lifted once per graph.json change and cached (lib/graphify.mjs).
+let gfy = null;
+if (!args['no-graphify'] && !scan.blueprint) {
+  try { gfy = loadGraphify(root, path.join(outDir, '.cache')); } catch (e) { warn(`graphify-out/graph.json could not be read: ${e.message}`); }
+}
+let gfyLinks = 0;
+if (gfy) for (const e of gfy.links) {
+  if (!includedSet.has(e.from) || !includedSet.has(e.to)) continue;
+  gfyLinks++;
+  addLink(`f:${e.from}`, `f:${e.to}`, e.kind, { w: e.w, names: e.labels, inferred: true });
+}
 
 // externals: packages / hosts claimed by nodes
 const extIds = scan.externals.map((e) => e.id);
@@ -516,6 +536,7 @@ const describedFiles = included.filter((f) => fileDesc.get(f.path)?.d || f.desc)
 const describedRoutes = routesIn.filter((r) => routeDesc.get(routeKey(r))?.d || r.desc).length;
 const noSummary = nodes.filter((n) => n?.id && !isStr(n.summary)).map((n) => n.id);
 const reviewCount = [...fileDesc.values(), ...routeDesc.values()].filter((d) => d.review).length;
+if (gfy) report.push(`GRAPHIFY  ${gfyLinks} file links from graphify-out/graph.json (${fmtNum(gfy.nodes)} nodes, built at ${(gfy.commit || '?').slice(0, 8)}${gfy.ms != null ? `, lifted in ${(gfy.ms / 1000).toFixed(1)}s` : ''}), communities on ${Object.keys(gfy.community).filter((p) => includedSet.has(p)).length} files`);
 report.push(`DESCRIPTIONS  files ${describedFiles}/${included.length} · routes ${describedRoutes}/${routesIn.length} · modules ${nodes.length - noSummary.length}/${nodes.length}${reviewCount ? ` · ${reviewCount} need review (code changed)` : ''}`);
 if (noSummary.length) report.push(`  modules without a summary: ${noSummary.slice(0, 12).join(', ')}${noSummary.length > 12 ? '…' : ''}`);
 if (describedFiles < included.length || describedRoutes < routesIn.length || reviewCount) report.push(`  Run describe.mjs to get worksheets for the ${included.length - describedFiles} file(s) and ${routesIn.length - describedRoutes} route(s) still missing descriptions.`);
@@ -567,6 +588,7 @@ const graph = {
     ...(editor.template ? { editor: editor.template } : {}),
     ...(scan.blueprint ? { blueprint: { source: scan.blueprint.source, stack: scan.blueprint.stack, assumptions: scan.blueprint.assumptions } } : {}),
     repos: scan.repos.map(({ path: p, name, branch, head, remote }) => ({ path: p, name, branch, head, remote })),
+    ...(gfy ? { graphify: { commit: gfy.commit, nodes: gfy.nodes, links: gfyLinks, at: gfy.at } } : {}),
     counts: { files: included.length, loc: included.reduce((s, f) => s + f.loc, 0), unassigned: unassigned.length },
   },
   project: arch.project,
@@ -587,6 +609,7 @@ const graph = {
       ...(f.tooLarge ? { tooLarge: true } : {}),
       ...(d?.review ? { review: d.review } : {}),
       ...(f.h ? { h: f.h, sig: f.sig } : {}),
+      ...(gfy?.community[f.path] ? { g: gfy.community[f.path] } : {}),
       ...(f.symbols ? { s: f.symbols.map((s) => [s.name, s.kind, s.line, s.default ? 1 : 0, s.doc || '']) } : {}),
       ...(notes.has(f.path) ? notes.get(f.path) : {}),
     };
@@ -603,7 +626,37 @@ const graph = {
 // extension hooks, computed from the finished graph plus the raw scan
 // a blueprint has no code to check, so its Health is a design review of the plan (computed after screens)
 if (!scan.blueprint) try { graph.health = buildHealth({ graph, scan, arch, root }); } catch (e) { warn(`health check failed: ${e.message}`); graph.health = { issues: [] }; }
+// Odoo checks (lib/odoo-health.mjs), on files that are on the map
+if (scan.odoo?.issues?.length && graph.health) {
+  const onMap = (i) => ({ ...i, items: i.items.filter((x) => includedSet.has(x.slice(2))) });
+  graph.health.issues = [...scan.odoo.issues.map(onMap).filter((i) => i.items.length), ...graph.health.issues];
+  const order = { high: 0, medium: 1, low: 2 };
+  graph.health.issues.sort((a, b) => order[a.severity] - order[b.severity]);
+  graph.health.summary = { high: 0, medium: 0, low: 0 };
+  for (const i of graph.health.issues) graph.health.summary[i.severity]++;
+}
 try { graph.screens = buildScreens({ graph, scan, arch, root }); } catch (e) { warn(`screen detection failed: ${e.message}`); graph.screens = []; }
+// Odoo menus: what's behind a menu is the model its action opens: where it's defined, extended, and its other views
+if (scan.odoo && graph.screens?.length) {
+  const modelOf = new Map();
+  for (const f of scan.files) for (const h of f.screens || []) if (h.fw === 'odoo' && h.model) modelOf.set(`${f.path}|${h.url}`, h.model);
+  const models = new Map((scan.odoo.models || []).map((m) => [m.name, m]));
+  const viewsOf = new Map();
+  for (const l of scan.odoo.links || []) if (l.kind === 'model' && /\.xml$/.test(l.from)) { if (!viewsOf.has(l.label)) viewsOf.set(l.label, new Set()); viewsOf.get(l.label).add(l.from); }
+  for (const sc of graph.screens) {
+    if (sc.fw !== 'odoo') continue;
+    const model = modelOf.get(`${sc.file}|${sc.url}`);
+    if (!model) continue;
+    sc.model = model;
+    const have = new Set(sc.behind.map((b) => b.id));
+    const push = (p, note, kind) => { const id = 'f:' + p; if (includedSet.has(p) && !have.has(id) && sc.behind.length < 40) { have.add(id); sc.behind.push({ id, note, kind }); } };
+    const m = models.get(model);
+    for (const p of m?.files || []) push(p, `Defines ${model}`, 'data');
+    for (const p of m?.ext || []) push(p, `Extends ${model}`, 'server');
+    for (const p of viewsOf.get(model) || []) push(p, `Views or rights of ${model}`, 'part');
+    if (!m && odooCore && !have.has(`n:${odooCore.id}`)) sc.behind.push({ id: `n:${odooCore.id}`, note: `${model} is an Odoo standard model`, kind: 'outside' });
+  }
+}
 if (scan.blueprint) try { graph.health = buildPlanHealth({ graph, scan }); } catch (e) { warn(`design review failed: ${e.message}`); graph.health = { issues: [] }; }
 // issues people marked "not a problem" on the map (saved by serve.mjs) stay listed, set apart, and leave the counts
 const dismissedFile = path.join(outDir, 'health-dismissed.json');
