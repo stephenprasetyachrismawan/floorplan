@@ -5,6 +5,7 @@ argument-hint: "[path-to-codebase-root] [--refresh]"
 allowed-tools:
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/build.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/describe.mjs *)
+  - Bash(node ${CLAUDE_SKILL_DIR}/scripts/graphify-sync.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/odoo-arch.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/open.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/plan.mjs *)
@@ -12,6 +13,7 @@ allowed-tools:
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/refresh.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/scan.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/status.mjs *)
+  - Bash(node ${CLAUDE_SKILL_DIR}/scripts/watch.mjs *)
 ---
 
 # Floorplan
@@ -72,6 +74,12 @@ When the scan prints an `ODOO` line (folders with `__manifest__.py`), the map is
 - Every Odoo file gets a developer name and description from its code (model, fields, computes, views, actions), so describe.mjs is optional.
 
 First run: `scan.mjs`, then `node ${CLAUDE_SKILL_DIR}/scripts/odoo-arch.mjs <root>` (writes architecture.json: one part per business area, one per addon, one per layer in big addons, plus "Odoo standard"; `--update` adds new addons and keeps your edits), then `build.mjs`. If the project has `graphify-out/graph.json`, the build also draws graphify's cross-file calls and communities.
+
+## Updates that touch only what changed
+
+- `scan.mjs` keeps what it extracted per file in `.cache/files.json` and re-reads only files whose size or modification time changed (and every file when the scanner's own code changed); joining files (imports, routes, Odoo links, Health) is still done over all of them. `--no-cache` reads everything.
+- `node ${CLAUDE_SKILL_DIR}/scripts/graphify-sync.mjs <root>` brings `graphify-out/graph.json` up to date in seconds: only changed files are re-extracted with graphify's own extractor (with the files they import as context), nodes of deleted files are dropped, the changed files' calls into other files are resolved against the whole graph, and communities are kept (new nodes join their neighbours'). The result has the same nodes and edges as a full `graphify update`; `--full` runs that full update (re-clustering, GRAPH_REPORT.md).
+- `node ${CLAUDE_SKILL_DIR}/scripts/watch.mjs <root> --serve [--port 4378]` keeps the map current on its own: it polls the checkout every few seconds and, after a change, runs graphify-sync, scan, `odoo-arch.mjs --update` (Odoo) and build; open tabs reload. Once a day (`--full-at 03:30`, or `off`) it runs the full graphify update. It's meant to run as a login service (see `tools/service/` in the Floorplan repo).
 
 ## Workflow (first run)
 

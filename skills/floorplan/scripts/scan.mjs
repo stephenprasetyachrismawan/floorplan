@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { discover, listGitFiles, explainGitError, gitInfo, classify, themeRoots, toPosix, parseArgs, fmtNum, HARD_IGNORE_DIRS, MAP_DIR, LEGACY_MAP_DIR, isMapDir, mapDir, keepOutOfGit, unattendedMode, printJson, skippedConfigs, MAX_CONFIG_BYTES, readJsonFile, notMapped } from './lib/common.mjs';
 import { extract, callableCallsVia, phpPages } from './lib/extract.mjs';
 import { findIssues } from './lib/health.mjs';
@@ -23,6 +24,7 @@ import { edgeFunctionRoutes } from './lib/supabase-functions.mjs';
 import { odooRoots, odooClassify, odooExtract, odooLink, odooDescribe } from './lib/odoo.mjs';
 import { odooHealth } from './lib/odoo-health.mjs';
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv.slice(2));
 const unattended = unattendedMode(args);
 const root = path.resolve(args._[0] || '.');
@@ -80,6 +82,15 @@ if (unattended && problems.length) {
 }
 
 // ---------- 2. classify, read, extract ----------
+// Extraction is cached per file (.cache/files.json): a file whose size and modification time are unchanged since
+// the last scan, read by the same scanner code, reuses what was extracted from it. Only changed files are parsed,
+// and everything that joins files (imports, routes, Odoo links, Health) is still worked out from all of them.
+const SCANNER = hash(fs.readdirSync(path.join(HERE, 'lib')).filter((n) => /\.m?js$/.test(n)).sort().map((n) => fs.readFileSync(path.join(HERE, 'lib', n), 'utf8')).join('\0') + fs.readFileSync(fileURLToPath(import.meta.url), 'utf8') + maxBytes);
+const cacheFile = path.join(path.dirname(outFile), 'files.json');
+let fileCache = {};
+if (!args['no-cache']) try { const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); if (c.v === SCANNER) fileCache = c.files || {}; } catch { /* first scan, or another scanner version */ }
+const nextCache = {};
+let reused = 0, parsed = 0;
 const files = [];
 const themes = themeRoots(fileList.map((f) => f.path));
 // Odoo addons (folders with a __manifest__.py): their XML and access CSVs are code (lib/odoo.mjs)
@@ -90,11 +101,20 @@ for (const { path: p, repo } of fileList) {
   try { st = fs.statSync(abs); } catch { continue; }
   if (!st.isFile()) continue;
   const { category, lang } = odooClassify(p, odoo) || classify(p, st.size, { themes });
+  const hit = fileCache[p];
+  if (hit && hit.s === st.size && hit.m === st.mtimeMs && hit.c === `${category}|${lang}`) {
+    // a fresh copy: later steps add resolved targets to a file's imports, which must not leak into the cache
+    files.push({ ...JSON.parse(hit.j), path: p, repo });
+    nextCache[p] = hit;
+    reused++;
+    continue;
+  }
+  parsed++;
   const f = { path: p, repo, category, lang, bytes: st.size, loc: 0 };
   if ((category === 'code' || category === 'config' || category === 'docs') && st.size <= maxBytes) {
     let src;
     try { src = fs.readFileSync(abs, 'utf8'); } catch { src = ''; }
-    if (src.includes('\u0000')) { f.category = 'asset'; files.push(f); continue; }
+    if (src.includes('\u0000')) { f.category = 'asset'; files.push(f); f._stat = [st.size, st.mtimeMs, `${category}|${lang}`]; continue; }
     f.loc = src.split('\n').filter((l) => l.trim()).length;
     if (category === 'code' && src.length) {
       try { Object.assign(f, extract(src, lang, p)); } catch (e) { f.extractError = String(e.message || e); }
@@ -115,7 +135,10 @@ for (const { path: p, repo } of fileList) {
     f.loc = countLines(abs);
   }
   files.push(f);
+  f._stat = [st.size, st.mtimeMs, `${category}|${lang}`];
 }
+// what was extracted, before the steps below add links between files to it
+for (const f of files) if (f._stat) { const [sz, mt, cl] = f._stat; delete f._stat; const { path: _p, repo: _r, ...r } = f; nextCache[f.path] = { s: sz, m: mt, c: cl, j: JSON.stringify(r) }; }
 
 /** Lines in a file, read in chunks so a huge file is never held in memory at once. */
 function countLines(abs) {
@@ -252,6 +275,7 @@ const scan = {
 };
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, JSON.stringify(scan));
+if (!args['no-cache']) fs.writeFileSync(cacheFile, JSON.stringify({ v: SCANNER, files: nextCache }));
 if (!args.out) keepOutOfGit(outDir);
 
 function dedupeExt(list) {
@@ -264,7 +288,7 @@ function dedupeExt(list) {
 const code = scan.files.filter((f) => f.category === 'code');
 const out = [];
 const line = (s = '') => out.push(s);
-line(`Floorplan scan of ${scan.rootName}  (${((Date.now() - t0) / 1000).toFixed(1)}s) -> ${toPosix(path.relative(root, outFile))}`);
+line(`Floorplan scan of ${scan.rootName}  (${((Date.now() - t0) / 1000).toFixed(1)}s, ${parsed} file(s) read, ${reused} unchanged from the cache) -> ${toPosix(path.relative(root, outFile))}`);
 line();
 line(`REPOS (${repos.length})`);
 for (const r of repos) line(`  ${r.path.padEnd(40)} ${String(r.files).padStart(6)} files  ${r.branch || '-'}@${(r.head || '').slice(0, 8)}${r.worktreeOf ? '  (worktree)' : ''}${r.listed === false ? '  ! git could not list its files' : ''}`);

@@ -61,7 +61,7 @@ test('nothing to install: no dependencies and no install scripts', () => {
 test('the only commands pre-approved are the skill’s own scripts, and that list is fixed', () => {
   const front = /^---\n([\s\S]*?)\n---/.exec(read(path.join(SKILL, 'SKILL.md')).replace(/\r\n/g, '\n'))[1];
   // each script runs without a prompt while the skill is in use, so adding one is a deliberate change
-  const SCRIPTS = ['build.mjs', 'describe.mjs', 'odoo-arch.mjs', 'open.mjs', 'plan.mjs', 'recent.mjs', 'refresh.mjs', 'scan.mjs', 'status.mjs'];
+  const SCRIPTS = ['build.mjs', 'describe.mjs', 'graphify-sync.mjs', 'odoo-arch.mjs', 'open.mjs', 'plan.mjs', 'recent.mjs', 'refresh.mjs', 'scan.mjs', 'status.mjs', 'watch.mjs'];
   const granted = /^allowed-tools:\n((?: {2}- .*\n?)+)/m.exec(front + '\n')?.[1].trim().split('\n').map((l) => l.replace(/^\s*- /, '').trim());
   assert.deepEqual(granted, SCRIPTS.map((s) => `Bash(node \${CLAUDE_SKILL_DIR}/scripts/${s} *)`), `SKILL.md allowed-tools: exactly the skill's own scripts. ${UPDATE}`);
   const scripts = fs.readdirSync(path.join(SKILL, 'scripts')).filter((n) => !fs.statSync(path.join(SKILL, 'scripts', n)).isDirectory()).sort();
@@ -94,7 +94,7 @@ test('it reaches the internet in one place: the waitlist, only when someone sign
 
 test('it runs a fixed list of programs, and never through a shell', () => {
   const importers = find(/from\s+['"](?:node:)?child_process['"]/).map((x) => x.file).sort();
-  assert.deepEqual(importers, ['assets/serve.mjs', 'scripts/lib/common.mjs', 'scripts/open.mjs', 'scripts/refresh.mjs'], `files that start programs. ${UPDATE}`);
+  assert.deepEqual(importers, ['assets/serve.mjs', 'scripts/graphify-sync.mjs', 'scripts/lib/common.mjs', 'scripts/open.mjs', 'scripts/refresh.mjs', 'scripts/watch.mjs'], `files that start programs. ${UPDATE}`);
   // only spawn and execFileSync, which take a program and its arguments (regex .exec() is text matching)
   const names = find(/import\s*\{([^}]*)\}\s*from\s+['"](?:node:)?child_process['"]/).flatMap((x) => x.m[1].split(',').map((n) => n.trim()));
   assert.deepEqual([...new Set(names)].sort(), ['execFileSync', 'spawn'], `child_process functions used. ${UPDATE}`);
@@ -110,6 +110,8 @@ test('it runs a fixed list of programs, and never through a shell', () => {
     "'git'",
     'opener[0]',
     'cmd',
+    // graphify-sync.mjs: graphify's own Python (recorded by graphify, or its pipx install) running lib/graphify_sync.py
+    'py',
   ]);
   const starts = find(/\b(spawn|execFileSync)\(\s*([^,]+),/).map((x) => ({ ...x, prog: x.m[2].trim() }));
   assert.ok(starts.length >= 8, 'found the calls');
@@ -136,8 +138,8 @@ test('no code is downloaded, decoded or built from text at run time', () => {
 
 test('every shipped file is source, text or a known kind of image or font', () => {
   const kinds = new Set(shipped.map((f) => path.extname(f).toLowerCase()));
-  assert.deepEqual([...kinds].sort(), ['.html', '.js', '.json', '.md', '.mjs', '.png', '.txt', '.woff2', '.yaml'].filter((k) => kinds.has(k)), 'kinds of file');
-  for (const k of kinds) assert.ok(['.html', '.js', '.json', '.md', '.mjs', '.png', '.txt', '.woff2', '.yaml'].includes(k), `unexpected kind of file: ${k}. ${UPDATE}`);
+  assert.deepEqual([...kinds].sort(), ['.html', '.js', '.json', '.md', '.mjs', '.png', '.py', '.txt', '.woff2', '.yaml'].filter((k) => kinds.has(k)), 'kinds of file');
+  for (const k of kinds) assert.ok(['.html', '.js', '.json', '.md', '.mjs', '.png', '.py', '.txt', '.woff2', '.yaml'].includes(k), `unexpected kind of file: ${k}. ${UPDATE}`);
 });
 
 test('vendored files are unchanged: the layout engine matches elkjs 0.9.3 on npm byte for byte', () => {
