@@ -45,6 +45,7 @@ const root = makeProject({
     "    path = os.path.join(os.path.dirname(__file__), 'data', 'seed.xml')",
     "    tools.convert_file(env, 'base_addon', path, None, mode='init', noupdate=True, kind='data')",
   ].join('\n'),
+  'base_addon/whatsapp_service/.puppeteerrc.cjs': "const { join } = require('path');\nmodule.exports = { cacheDirectory: join(__dirname, '.cache', 'puppeteer') };\n",
   'base_addon/data/seed.xml': '<odoo><record id="seed" model="base.thing"/></odoo>\n',
   'base_addon/controllers/__init__.py': 'from . import hook\n',
   'base_addon/controllers/hook.py': [
@@ -98,4 +99,6 @@ test('Odoo Health skips guarded uses, commented code, parked classes, hook-loade
   assert.deepEqual(at('odoo-sql-format').locations.map((l) => `${l.file}:${l.line}`), ['base_addon/models/thing.py:19']);
   // the public route checks an HMAC before sudo()
   assert.equal(at('odoo-public-sudo'), undefined);
+  // Puppeteer reads .puppeteerrc.cjs by name: not an unused file
+  assert.ok(!g.health.issues.some((i) => (i.items || []).includes('f:base_addon/whatsapp_service/.puppeteerrc.cjs')));
 });
