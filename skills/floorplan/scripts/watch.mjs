@@ -10,7 +10,14 @@
 //   4. build.mjs: redraws graph.json and index.html; open tabs reload themselves.
 // Once a day (--full-at, default 03:30) it runs the full `graphify update`, which re-clusters communities.
 //
+// --follow origin/preprod turns root into a map of that branch: root must be a checkout kept only for the map
+// (tools/service/install.sh --follow makes one as a git worktree). Every --fetch-every seconds (default 300) it
+// fetches the branch and, when it moved, checks the new commit out (detached); the loop above then updates the map.
+// A checkout with local edits to tracked files is never moved. Without graphify-out/graph.json yet, the first
+// update runs the full graphify once.
+//
 // usage: node watch.mjs [root] [--serve] [--port 4378] [--interval 5] [--full-at 03:30|off] [--no-graphify] [--once]
+//                       [--follow <remote>/<branch>] [--fetch-every 300]
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,6 +37,27 @@ const node = process.execPath;
 const stamp = () => { const d = new Date(); const z = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
 const log = (msg) => console.log(`${stamp()}  ${msg}`);
 const OWN = /^(floorplan|graphify-out|\.floww|node_modules)\//;
+const follow = typeof args.follow === 'string' && /^[\w.-]+\/[\w./-]+$/.test(args.follow) ? args.follow : null;
+const fetchEvery = Math.max(30, Number(args['fetch-every']) || 300) * 1000;
+const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+
+/** --follow: fetch the branch and move the checkout to it. Returns the new short sha when it moved. */
+function followBranch() {
+  const slash = follow.indexOf('/');
+  const remote = follow.slice(0, slash), branch = follow.slice(slash + 1);
+  try {
+    git('fetch', '--quiet', remote, branch);
+    const want = git('rev-parse', `refs/remotes/${follow}`);
+    const have = git('rev-parse', 'HEAD');
+    if (want === have) return null;
+    if (git('status', '--porcelain', '--untracked-files=no')) { log(`! ${root} has local edits: not moving it to ${follow}`); return null; }
+    git('checkout', '--quiet', '--detach', want);
+    return want.slice(0, 8);
+  } catch (e) {
+    log(`! could not follow ${follow}: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
+    return null;
+  }
+}
 
 /** A fingerprint of the checkout: HEAD plus every listed file's size and modification time. */
 function fingerprint() {
@@ -62,8 +90,11 @@ function update(reason, { full = false } = {}) {
   const t = performance.now(); // monotonic: WSL's clock can jump while a step runs
   const done = [];
   try {
-    if (useGraphify && fs.existsSync(path.join(root, 'graphify-out', 'graph.json'))) {
-      try { done.push(step(full ? 'graphify(full)' : 'graphify', 'graphify-sync.mjs', full ? ['--full'] : [])); } catch (e) { log(`! ${e.message} (the map is still built from the code)`); }
+    const hasGraph = fs.existsSync(path.join(root, 'graphify-out', 'graph.json'));
+    // a branch map starts without a graph: build it once in full, then sync it like any other
+    if (useGraphify && (hasGraph || follow)) {
+      const whole = full || !hasGraph;
+      try { done.push(step(whole ? 'graphify(full)' : 'graphify', 'graphify-sync.mjs', whole ? ['--full'] : [])); } catch (e) { log(`! ${e.message} (the map is still built from the code)`); }
     }
     done.push(step('scan', 'scan.mjs'));
     const scanFile = path.join(outDir, '.cache', 'scan.json');
@@ -97,6 +128,7 @@ process.on('SIGINT', stop);
 // ---------- loop ----------
 // serve the map as it is right away, then bring it up to date
 if (args.serve && !args.once) serve();
+if (follow) { const moved = followBranch(); if (moved) log(`${follow} is at ${moved}`); }
 update('start');
 if (args.once) process.exit(0);
 let last = fingerprint(), pending = null, lastFull = null;
@@ -114,4 +146,5 @@ setInterval(() => {
     }
   }
 }, interval);
-log(`watching ${root} every ${interval / 1000}s${fullAt ? `, full graphify update daily at ${fullAt}` : ''}`);
+if (follow) setInterval(() => { if (running) return; const moved = followBranch(); if (moved) log(`${follow} moved to ${moved}`); }, fetchEvery);
+log(`watching ${root} every ${interval / 1000}s${follow ? `, following ${follow} (fetch every ${fetchEvery / 1000}s)` : ''}${fullAt ? `, full graphify update daily at ${fullAt}` : ''}`);

@@ -55,3 +55,19 @@ edit reaches the map in about 10–15 seconds.
 On WSL, `--windows-autostart` adds a hidden entry to the Windows Startup folder that starts the distro at
 sign-in, so the map is up without opening a terminal. Remove the service with
 `tools/service/install.sh --uninstall --name <name>`. Logs: `journalctl --user -u floorplan-<name> -f`.
+
+## A map per branch
+
+A map of the checkout you work in changes whenever you switch branches. To keep maps of fixed branches instead
+(say what is on staging and what is in production), give each its own worktree and service:
+
+```bash
+tools/service/install.sh <repo> --follow origin/preprod --worktree ~/maps/myapp-preprod --name myapp-preprod --port 4378
+tools/service/install.sh <repo> --follow origin/master  --worktree ~/maps/myapp-master  --name myapp-master  --port 4379
+```
+
+`--follow` adds the worktree (detached, at the branch) and copies the repo's `.graphifyignore` into it. The
+service fetches the branch every 5 minutes (`--fetch-every`), checks out the new commit when it moved, and updates
+the map as for any change. The first start runs the full graphify once for that worktree. Nothing is ever pushed
+or committed there; a worktree with local edits to tracked files is left where it is and the log says so.
+Remove one with `tools/service/install.sh --uninstall --name myapp-preprod --worktree ~/maps/myapp-preprod`.
