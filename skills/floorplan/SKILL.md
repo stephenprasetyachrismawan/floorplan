@@ -5,6 +5,7 @@ argument-hint: "[path-to-codebase-root] [--refresh]"
 allowed-tools:
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/build.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/describe.mjs *)
+  - Bash(node ${CLAUDE_SKILL_DIR}/scripts/odoo-arch.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/open.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/plan.mjs *)
   - Bash(node ${CLAUDE_SKILL_DIR}/scripts/recent.mjs *)
@@ -60,6 +61,17 @@ Do only what NEXT asks:
 - check module summaries and flows if the change was large.
 
 A typical refresh after a few hours of work is a handful of worksheet entries. Then mark recent work (step 7), and show it and report (step 8). Always show it, even when nothing changed: the user asked to see their floorplan.
+
+## Odoo projects
+
+When the scan prints an `ODOO` line (folders with `__manifest__.py`), the map is Odoo-aware:
+- XML views/actions/menus and `ir.model.access.csv` count as code; links read `Extends` (`_inherit`, `inherit_id`, `t-inherit`), `Works on records` (`env['x']`, `model`/`res_model`, access rows, Many2one targets), `Calls` (web client `orm.call`), `Opens / refers to` (menus → actions, `env.ref`, Owl `template`) and `Settings` (manifest `data`/`assets`); addon `depends` are imports.
+- Controllers (`@http.route`) are endpoints with their `auth`, `type` and `csrf`; `rpc('/x')` in the web client is matched to them.
+- Menus that open a window action are **Screens**, with the model behind them (where it's defined, extended, and its other views).
+- Health adds Odoo checks: public routes using `sudo()`, SQL built with string formatting, models without access rights, XML/CSV no manifest loads, and addons using another custom addon's model without depending on it.
+- Every Odoo file gets a developer name and description from its code (model, fields, computes, views, actions), so describe.mjs is optional.
+
+First run: `scan.mjs`, then `node ${CLAUDE_SKILL_DIR}/scripts/odoo-arch.mjs <root>` (writes architecture.json: one part per business area, one per addon, one per layer in big addons, plus "Odoo standard"; `--update` adds new addons and keeps your edits), then `build.mjs`. If the project has `graphify-out/graph.json`, the build also draws graphify's cross-file calls and communities.
 
 ## Workflow (first run)
 

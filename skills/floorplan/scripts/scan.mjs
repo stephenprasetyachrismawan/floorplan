@@ -20,6 +20,8 @@ import { resolveRoutes, matchCalls, matchWayfinder, inertiaLinks } from './lib/r
 import { nuxtAutoImports } from './lib/nuxt.mjs';
 import { serverlessRoutes } from './lib/serverless.mjs';
 import { edgeFunctionRoutes } from './lib/supabase-functions.mjs';
+import { odooRoots, odooClassify, odooExtract, odooLink, odooDescribe } from './lib/odoo.mjs';
+import { odooHealth } from './lib/odoo-health.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const unattended = unattendedMode(args);
@@ -80,12 +82,14 @@ if (unattended && problems.length) {
 // ---------- 2. classify, read, extract ----------
 const files = [];
 const themes = themeRoots(fileList.map((f) => f.path));
+// Odoo addons (folders with a __manifest__.py): their XML and access CSVs are code (lib/odoo.mjs)
+const odoo = odooRoots(fileList.map((f) => f.path));
 for (const { path: p, repo } of fileList) {
   const abs = path.join(root, p);
   let st;
   try { st = fs.statSync(abs); } catch { continue; }
   if (!st.isFile()) continue;
-  const { category, lang } = classify(p, st.size, { themes });
+  const { category, lang } = odooClassify(p, odoo) || classify(p, st.size, { themes });
   const f = { path: p, repo, category, lang, bytes: st.size, loc: 0 };
   if ((category === 'code' || category === 'config' || category === 'docs') && st.size <= maxBytes) {
     let src;
@@ -94,6 +98,7 @@ for (const { path: p, repo } of fileList) {
     f.loc = src.split('\n').filter((l) => l.trim()).length;
     if (category === 'code' && src.length) {
       try { Object.assign(f, extract(src, lang, p)); } catch (e) { f.extractError = String(e.message || e); }
+      if (odoo.size) try { const o = odooExtract(src, lang, p); if (o) f.odoo = o; } catch (e) { f.odooError = String(e.message || e); }
       // h: exact content. sig: the parts a description depends on (exports, routes, docstring),
       // so edits inside function bodies don't mark a file's description as stale.
       f.h = hash(src);
@@ -179,9 +184,15 @@ if (wrappers.size) for (const f of files) {
 }
 
 // ---------- 4. routes and HTTP calls ----------
+// Odoo: models, XML ids, manifests and the web client joined across files; rpc('/x') calls go to the matcher below
+const od = odoo.size ? odooLink(files, odoo) : null;
+// an Odoo controller's routes come from lib/odoo.mjs (auth, type, csrf), not from the generic Python reader
+if (od) for (const f of files) if (f.odoo?.routes && f.routes) delete f.routes;
+if (od) for (const f of files) if (f.odoo?.rpc) f.calls = [...(f.calls || []), ...f.odoo.rpc.map((c) => ({ path: c.path, method: null, line: c.line }))];
 // plain PHP sites: each script under the document root is a page with its own address (needs the imports above)
 phpPages(files);
 const routes = resolveRoutes(files);
+if (od) routes.push(...od.routes);
 // Serverless Framework: endpoints declared in serverless.yml, placed in the file that answers them (lib/serverless.mjs)
 const serverless = serverlessRoutes(files, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
 routes.push(...serverless.routes);
@@ -194,6 +205,13 @@ const inertia = inertiaLinks(files, routes);
 http.push(...wayfinderLinks, ...inertia.http);
 const fileAt = new Map(files.map((f) => [f.path, f]));
 for (const { file, hint } of inertia.hints) { const f = fileAt.get(file); if (f) f.screens = [...(f.screens || []), hint]; }
+if (od) {
+  for (const [file, hints] of od.screens) { const f = fileAt.get(file); if (f) f.screens = [...(f.screens || []), ...hints]; }
+  // loaded by Odoo by name (manifest data/assets, __init__ models, tests, migrations): never "unused"
+  for (const p of od.used) { const f = fileAt.get(p); if (f) f.issues = [...(f.issues || []), { k: 'runnable' }]; }
+  const ctx = { mod: od.mod };
+  for (const f of files) { const d = f.odoo && odooDescribe(f, ctx); if (d?.name && !f.name) f.name = d.name; if (d?.desc && !f.desc) f.desc = d.desc; }
+}
 const hosts = [];
 for (const f of files) for (const h of f.hosts || []) hosts.push({ from: f.path, host: h.host, line: h.line });
 
@@ -210,6 +228,8 @@ const scan = {
   files: files.map((f) => ({
     path: f.path, repo: f.repo, category: f.category, lang: f.lang, loc: f.loc, bytes: f.bytes,
     ...(f.doc ? { doc: f.doc } : {}),
+    ...(f.name ? { name: f.name } : {}),
+    ...(f.desc ? { desc: f.desc } : {}),
     ...(f.h ? { h: f.h, sig: f.sig } : {}),
     ...(f.symbols?.length ? { symbols: f.symbols } : {}),
     ...(f.tooLarge ? { tooLarge: true } : {}),
@@ -223,6 +243,12 @@ const scan = {
   routes,
   http,
   hosts,
+  ...(od ? { odoo: {
+    modules: od.modules.map(({ root: r, name, title, manifest, summary, category, version, depends, application }) => ({ root: r, name, title, manifest, summary: summary || '', category: category || '', version: version || '', depends: depends || [], application: !!application })),
+    links: od.links, core: od.core,
+    models: [...od.modelDefs].map(([name, defs]) => ({ name, files: defs.map((d) => d.file), kind: defs[0].m.kind, desc: defs[0].m.desc, ext: (od.modelExt.get(name) || []).map((e) => e.file) })),
+    issues: odooHealth(files, od),
+  } } : {}),
 };
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, JSON.stringify(scan));
@@ -328,6 +354,12 @@ for (const a of nuxt.apps) {
   line();
 }
 
+if (od) {
+  const counts = {}; for (const l of od.links) counts[l.kind] = (counts[l.kind] || 0) + 1;
+  line(`ODOO  ${od.modules.length} addon(s), ${od.modelDefs.size} model(s) defined, ${od.routes.length} controller route(s), ${[...od.screens.values()].flat().length} menu screen(s); links ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(', ')}, ${od.core.length} to Odoo standard models`);
+  line(`  Next for Odoo: node scripts/odoo-arch.mjs <root> writes architecture.json (one part per addon) if there's none yet.`);
+  line();
+}
 line(`HTTP  ${routes.length} route definitions, ${http.length} call->route matches (cross-file links not visible to imports)`);
 const httpDir = new Map();
 for (const h of http) {
