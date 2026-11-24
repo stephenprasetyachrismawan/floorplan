@@ -71,10 +71,27 @@ function pyManifest(src) {
   };
 }
 
-function pyOdoo(src, p) {
-  const at = lineAt(src);
+/**
+ * Python source with comment lines and statement-level triple-quoted strings (docstrings, and code parked inside
+ * """ ... """) blanked, newlines kept so line numbers still hold. A class or env['x'] in there is not code.
+ */
+export function pyCode(src) {
+  const blank = (t) => t.replace(/[^\n]/g, ' ');
+  return src
+    .replace(/^([ \t]*)("""|''')([\s\S]*?)\2/gm, (m, ind, q, body) => ind + q + blank(body) + q)
+    .replace(/^([ \t]*)#.*$/gm, (m, ind) => ind);
+}
+
+// a check that the caller is who it claims to be (HMAC signature, constant-time token compare, portal access)
+const VERIFIES = /hmac\.compare_digest\(|\bconsteq\(|_document_check_access\(/;
+// SQL identifiers an f-string may safely carry: the model's own table
+const SAFE_SQL_PART = /^\s*(self\.|cls\.|model\.)?_table\s*$/;
+
+function pyOdoo(raw, p) {
   const out = {};
-  if (P.basename(p) === MANIFEST) { out.manifest = pyManifest(src); return out; }
+  if (P.basename(p) === MANIFEST) { out.manifest = pyManifest(raw); return out; }
+  const src = pyCode(raw);
+  const at = lineAt(src);
   // models: each class body with _name / _inherit / _inherits
   const classes = [...src.matchAll(/^class\s+(\w+)\s*\(([^)]*)\)\s*:/gm)];
   const models = [];
@@ -105,7 +122,17 @@ function pyOdoo(src, p) {
   if (models.length) out.models = models;
   const env = new Map();
   for (const m of src.matchAll(/\benv\s*\[\s*['"]([\w.]+)['"]\s*\]/g)) if (!env.has(m[1])) env.set(m[1], at(m.index));
-  if (env.size) out.env = [...env].map(([model, line]) => ({ model, line }));
+  // `if 'x.y' not in self.env: return`: the code runs only when the addon defining x.y is installed
+  const guarded = new Set([...src.matchAll(/['"]([\w.]+)['"]\s+(?:not\s+)?in\s+(?:self\.|request\.|cls\.)?env\b/g)].map((m) => m[1]));
+  if (env.size) out.env = [...env].map(([model, line]) => ({ model, line, ...(guarded.has(model) ? { guarded: true } : {}) }));
+  // data files a hook loads itself: tools.convert_file(env, module, os.path.join(path, 'data', 'x.xml'), ...)
+  const loads = new Set();
+  for (const m of src.matchAll(/os\.path\.join\(([^\n]*?\.(?:xml|csv)['"])\s*\)/g)) {
+    const parts = [...m[1].matchAll(/['"]([^'"]+)['"]/g)].map((x) => x[1]);
+    if (parts.length && /\.(xml|csv)$/.test(parts[parts.length - 1])) loads.add(parts.join('/'));
+  }
+  for (const m of src.matchAll(/convert_file\([^)]*?['"]([\w./-]+\.(?:xml|csv))['"]/g)) loads.add(m[1]);
+  if (loads.size) out.loads = [...loads];
   const refs = new Map();
   for (const m of src.matchAll(/\.ref\(\s*['"]([\w]+\.[\w.]+)['"]/g)) if (!refs.has(m[1])) refs.set(m[1], at(m.index));
   if (refs.size) out.refs = [...refs].map(([id, line]) => ({ id, line }));
@@ -125,6 +152,7 @@ function pyOdoo(src, p) {
       type: opt('type') || 'http', auth: opt('auth') || 'user', csrf: opt('csrf') !== 'False',
       methods: methods ? strList(methods[1]).map((x) => x.toUpperCase()) : [],
       sudo: /\.sudo\(\)/.test(body), writes: /\.(create|write|unlink)\(/.test(body),
+      ...(VERIFIES.test(body) || VERIFIES.test(src) ? { verified: true } : {}),
     });
   }
   if (routes.length) out.routes = routes;
@@ -132,7 +160,16 @@ function pyOdoo(src, p) {
   const sudo = linesOf(/\.sudo\(\)/g);
   if (sudo.length) out.sudo = sudo.slice(0, 200);
   // raw SQL built with % or f-strings: cr.execute("..." % x) / cr.execute(f"...")
-  const sql = linesOf(/\bcr\.execute\(\s*(?:f["']|["'][^"'\n]*["']\s*%|["'][^"'\n]*["']\s*\.format\()/g);
+  const sql = [];
+  for (const m of src.matchAll(/\bcr\.execute\(\s*(?:f("""|'''|"|')|["'][^"'\n]*["']\s*%|["'][^"'\n]*["']\s*\.format\()/g)) {
+    if (m[1]) {
+      // an f-string that only interpolates the model's own table name is not an injection
+      const end = src.indexOf(m[1], m.index + m[0].length);
+      const parts = [...src.slice(m.index + m[0].length, end < 0 ? undefined : end).matchAll(/\{([^{}]*)\}/g)].map((x) => x[1]);
+      if (parts.length && parts.every((x) => SAFE_SQL_PART.test(x))) continue;
+    }
+    sql.push(at(m.index));
+  }
   if (sql.length) out.sqlFormat = sql;
   const delay = linesOf(/\.with_delay\(|\.delayable\(/g);
   if (delay.length) out.delay = delay.slice(0, 50);
@@ -291,10 +328,10 @@ export function odooLink(files, roots) {
 for (const f of files) for (const t of f.odoo?.owl || []) if (t.name && (!t.inherit || (t.mode === 'primary' && t.name !== t.inherit)) && !owlNames.has(t.name)) owlNames.set(t.name, { file: f.path, line: t.line });
 
   const links = [], core = [], used = new Set();
-  const add = (from, to, kind, label, line) => { if (to && from !== to) links.push({ from, to, kind, label, ...(line ? { line } : {}) }); };
-  const toModel = (from, model, kind, line) => {
+  const add = (from, to, kind, label, line, extra) => { if (to && from !== to) links.push({ from, to, kind, label, ...(line ? { line } : {}), ...extra }); };
+  const toModel = (from, model, kind, line, extra) => {
     const def = modelDefs.get(model);
-    if (def?.length) { for (const d of def.slice(0, 3)) add(from, d.file, kind, model, line); return; }
+    if (def?.length) { for (const d of def.slice(0, 3)) add(from, d.file, kind, model, line, extra); return; }
     core.push({ from, model, kind });
   };
   const refTarget = (id, from) => xmlIds.get(full(id, from)) || null;
@@ -321,7 +358,12 @@ for (const f of files) for (const t of f.odoo?.owl || []) if (t.name && (!t.inhe
       if (!defines && m.name && !m.inherit.length) toModel(f.path, m.name, 'inherit', m.line);
       for (const r of m.rel) if (modelDefs.has(r)) toModel(f.path, r, 'model', m.line);
     }
-    for (const e of o.env || []) toModel(f.path, e.model, 'model', e.line);
+    for (const e of o.env || []) toModel(f.path, e.model, 'model', e.line, e.guarded ? { guarded: true } : undefined);
+    for (const l of o.loads || []) {
+      const r = moduleOf(f.path, roots);
+      if (r === null) continue;
+      for (const q of byPath.keys()) if (q.startsWith(r) && (q === r + l || q.endsWith('/' + l))) { add(f.path, q, 'config', 'loaded by code'); used.add(q); }
+    }
     for (const r of o.refs || []) { const t = refTarget(r.id, f.path); if (t) add(f.path, t.file, 'ref', r.id, r.line); }
     for (const r of o.records || []) {
       if (r.target) toModel(f.path, r.target, 'model', r.line);

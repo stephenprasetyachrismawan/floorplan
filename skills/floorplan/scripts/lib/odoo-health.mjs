@@ -26,13 +26,16 @@ export function odooHealth(files, od) {
 
   // 1. public endpoints that switch to superuser rights
   const pub = [];
+  let verified = 0;
   for (const f of files) for (const r of f.odoo?.routes || []) {
-    if (TEST.test(f.path) || (r.auth !== 'public' && r.auth !== 'none')) continue;
-    if (r.sudo) pub.push({ file: f.path, line: r.line, what: `${r.path} auth=${r.auth}${r.writes ? ', writes records' : ''}` });
+    if (TEST.test(f.path) || (r.auth !== 'public' && r.auth !== 'none') || !r.sudo) continue;
+    // a webhook that checks an HMAC signature or a token with a constant-time compare already verifies its caller
+    if (r.verified) { verified++; continue; }
+    pub.push({ file: f.path, line: r.line, what: `${r.path} auth=${r.auth}${r.writes ? ', writes records' : ''}` });
   }
   if (pub.length) out.push(issue('odoo-public-sudo', 'unprotected-endpoint', pub.some((x) => /writes/.test(x.what)) ? 'high' : 'medium',
     `${pub.length} public Odoo endpoint${pub.length === 1 ? '' : 's'} use sudo()`,
-    'These routes accept callers who are not logged in (auth="public" or "none") and then run code with sudo(), which skips access rights and record rules. Anyone who finds the URL can reach whatever that code reads or changes. Check each one validates a token or the record it touches.',
+    'These routes accept callers who are not logged in (auth="public" or "none") and then run code with sudo(), which skips access rights and record rules. Anyone who finds the URL can reach whatever that code reads or changes. Check each one validates a token or the record it touches.' + (verified ? ` (${verified} other public sudo route${verified === 1 ? '' : 's'} sit in files that verify a signature or token with hmac.compare_digest / consteq and are not listed.)` : ''),
     pub,
     listFix('These Odoo controller routes are public and call sudo():', pub, 'For each, verify the caller before sudo(): check an access token (e.g. _document_check_access / consteq on access_token), limit the domain to the one record the token grants, and only sudo() the minimal read/write. Keep the route path and response format the same. Add a test that calls the route without a valid token and expects 403/404.'),
     (ls) => ls.map((l) => `${l.what} on line ${l.line}`).join('; ')));
@@ -99,6 +102,8 @@ export function odooHealth(files, od) {
   const missing = new Map();
   for (const l of od.links) {
     if (l.kind !== 'inherit' && l.kind !== 'model') continue;
+    // `if 'x.y' not in self.env`: written to run only when the other addon is installed
+    if (l.guarded) continue;
     const a = od.mod.get(l.from), b = od.mod.get(l.to);
     if (!a || !b || a === b || TEST.test(l.from)) continue;
     // the model may also be defined in a module A does depend on: only flag when no defining file is reachable
@@ -106,14 +111,16 @@ export function odooHealth(files, od) {
     if (defs.some((m) => m === a || depsOf(a).has(m))) continue;
     if (depsOf(a).has(b)) continue;
     const k = `${a}->${b}`;
-    if (!missing.has(k)) missing.set(k, { file: l.from, line: l.line || 1, what: `${a} uses ${l.label} from ${b}` });
+    // b already depends on a: a depends entry would be a cycle, so the use needs a guard or belongs in b
+    const reverse = depsOf(b).has(a);
+    if (!missing.has(k)) missing.set(k, { file: l.from, line: l.line || 1, what: `${a} uses ${l.label} from ${b}${reverse ? ` (${b} depends on ${a}: guard with 'in env' or move the code to ${b})` : ''}` });
   }
   const miss = [...missing.values()];
   if (miss.length) out.push(issue('odoo-missing-depends', 'database-rules', 'medium',
     `${miss.length} addon dependenc${miss.length === 1 ? 'y is' : 'ies are'} missing from manifests`,
     "An addon extends or uses a model that another custom addon defines, but doesn't list that addon (directly or through its depends) in __manifest__.py. Install or upgrade order then decides whether it works: a fresh install can fail with KeyError or a missing field.",
     miss,
-    listFix('These addons use models of addons they do not depend on:', miss, "Add the missing addon to 'depends' in the first addon's __manifest__.py (check it doesn't create a cycle), bump its version, and upgrade both on a test database."),
+    listFix('These addons use models of addons they do not depend on:', miss, "Add the missing addon to 'depends' in the first addon's __manifest__.py and bump its version. Where the other addon already depends on this one (noted in brackets) a depends entry would be a cycle: wrap the use in `if 'model.name' in self.env` or move that code into the other addon. Upgrade both on a test database."),
     (ls) => ls.map((l) => l.what).join('; ')));
 
   // 6. t-raw (removed in Odoo 17 QWeb: unsafe and deprecated)
