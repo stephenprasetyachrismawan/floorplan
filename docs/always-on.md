@@ -21,7 +21,7 @@ like: `--update` (which the watcher runs) only adds addons that are new.
 
 ## graphify
 
-When the project has `graphify-out/graph.json`, every build draws graphify's cross-file calls and inheritance and
+When the project has `graphify-out/graph.json`, every build draws graphify's cross-file calls and inheritance (only the EXTRACTED ones: calls graphify only guessed from a matching name are left out) and
 shows each file's graphify community. The graph is lifted to file level once per change of graph.json and cached
 in `floorplan/.cache/graphify.json`.
 

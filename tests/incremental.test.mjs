@@ -44,6 +44,7 @@ test('graphify-out/graph.json: cross-file calls and communities are drawn, and l
       { source: 'app_orders', target: 'orders_list', relation: 'calls' },
       { source: 'web_load', target: 'gone', relation: 'calls' },
       { source: 'app_orders', target: 'orders_list', relation: 'method' },
+      { source: 'web_load', target: 'orders_list', relation: 'calls', confidence: 'INFERRED' }, // a name match only: not drawn
     ],
   };
   writeJson(path.join(root, 'graphify-out', 'graph.json'), g);
