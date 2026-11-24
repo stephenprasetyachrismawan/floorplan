@@ -95,9 +95,10 @@ process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 
 // ---------- loop ----------
+// serve the map as it is right away, then bring it up to date
+if (args.serve && !args.once) serve();
 update('start');
 if (args.once) process.exit(0);
-if (args.serve) serve();
 let last = fingerprint(), pending = null, lastFull = null;
 setInterval(() => {
   const now = fingerprint();

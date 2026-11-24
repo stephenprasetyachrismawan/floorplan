@@ -21,7 +21,7 @@ import { resolveRoutes, matchCalls, matchWayfinder, inertiaLinks } from './lib/r
 import { nuxtAutoImports } from './lib/nuxt.mjs';
 import { serverlessRoutes } from './lib/serverless.mjs';
 import { edgeFunctionRoutes } from './lib/supabase-functions.mjs';
-import { odooRoots, odooClassify, odooExtract, odooLink, odooDescribe } from './lib/odoo.mjs';
+import { odooRoots, odooClassify, odooExtract, odooLink, odooDescribe, odooFallback } from './lib/odoo.mjs';
 import { odooHealth } from './lib/odoo-health.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -233,7 +233,7 @@ if (od) {
   // loaded by Odoo by name (manifest data/assets, __init__ models, tests, migrations): never "unused"
   for (const p of od.used) { const f = fileAt.get(p); if (f) f.issues = [...(f.issues || []), { k: 'runnable' }]; }
   const ctx = { mod: od.mod };
-  for (const f of files) { const d = f.odoo && odooDescribe(f, ctx); if (d?.name && !f.name) f.name = d.name; if (d?.desc && !f.desc) f.desc = d.desc; }
+  for (const f of files) { const d = (f.odoo && odooDescribe(f, ctx)) || odooFallback(f, odoo); if (d?.name && !f.name) f.name = d.name; if (d?.desc && !f.desc) f.desc = d.desc; }
 }
 const hosts = [];
 for (const f of files) for (const h of f.hosts || []) hosts.push({ from: f.path, host: h.host, line: h.line });

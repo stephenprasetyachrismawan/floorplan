@@ -128,6 +128,8 @@ test('odoo-arch.mjs writes one part per addon for developers, and the build name
   const g = readGraph(root);
   const f = g.files.find((x) => x.p === 'shop/models/shop_order.py');
   assert.match(f.d, /Model shop\.order \(Shop Order\)/);
+  // files Odoo facts don't name get a description from their path and code
+  assert.equal(g.files.find((x) => x.p === 'shop/__init__.py').d, 'Package init: imports models, controllers.');
   assert.ok(g.links.some((l) => l.a === 'f:shop/models/shop_order.py' && l.b === 'n:odoo-core' && l.k === 'model'));
   const screen = g.screens.find((s) => s.url === '/Shop / Orders');
   assert.ok(screen.behind.some((b) => b.id === 'f:shop/models/shop_order.py'));

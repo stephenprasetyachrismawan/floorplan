@@ -455,3 +455,34 @@ export function odooDescribe(f, ctx) {
   }
   return null;
 }
+
+/**
+ * For an addon file Odoo facts don't name (tests, migrations, package inits, plain Python, web client code,
+ * styles): a developer description from its path and what it defines. Null outside addons.
+ */
+export function odooFallback(f, roots) {
+  const r = moduleOf(f.path, roots);
+  if (r === null || f.category !== 'code') return null;
+  const rest = f.path.slice(r.length);
+  const b = P.basename(f.path);
+  const syms = (f.symbols || []).map((x) => x.name);
+  const list = (xs, n = 5) => `${xs.slice(0, n).join(', ')}${xs.length > n ? ` +${xs.length - n}` : ''}`;
+  const mig = /^(?:migrations|upgrades)\/([^/]+)\/(pre|post|end)[-_]?(.*)\.py$/.exec(rest);
+  if (mig) return { name: `Migration ${mig[1]} ${mig[2]}`, desc: `${mig[2]}-migration to ${mig[1]}${mig[3] ? ` (${mig[3].replace(/[-_]/g, ' ')})` : ''}, run by Odoo when the addon is upgraded${f.doc ? `: ${f.doc}` : '.'}` };
+  if (b === '__init__.py') {
+    const subs = [...new Set((f.imports || []).flatMap((i) => i.names?.length ? i.names : [String(i.spec || '').replace(/^\.+/, '')]).filter(Boolean))];
+    return { name: `${P.basename(P.dirname(f.path))} package`, desc: subs.length ? `Package init: imports ${list(subs, 8)}.` : 'Package init.' };
+  }
+  if (/^tests?\//.test(rest) && f.lang === 'python') {
+    const classes = (f.symbols || []).filter((x) => x.kind === 'class').map((x) => x.name);
+    return { name: null, desc: `Tests${classes.length ? ` ${list(classes, 3)}` : ''}${f.doc ? `: ${f.doc}` : ''}.` };
+  }
+  if (/^static\//.test(rest)) {
+    if (f.lang === 'css') return { name: null, desc: `Web client styles (${rest.replace(/^static\/(src\/)?/, '').replace(/\/[^/]+$/, '') || 'static'}).` };
+    if (/^static\/tests?\//.test(rest) || /(^|\/)tests?\//.test(rest)) return { name: null, desc: `Web client tests${syms.length ? `: ${list(syms, 3)}` : ''}.` };
+    if (f.lang === 'javascript' || f.lang === 'typescript') return { name: null, desc: `Web client code${syms.length ? `: ${list(syms)}` : ''}${f.doc ? `. ${f.doc}` : '.'}` };
+  }
+  if (f.lang === 'python' && syms.length) return { name: null, desc: `Python: ${list(syms)}${f.doc ? `. ${f.doc}` : '.'}` };
+  if (f.lang === 'xml') return { name: null, desc: 'XML data (no Odoo records found).' };
+  return null;
+}

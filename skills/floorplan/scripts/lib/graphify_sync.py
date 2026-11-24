@@ -38,20 +38,14 @@ def log(msg, quiet):
 
 
 def code_files(root):
+    """Code files graphify would read: git's list (honouring .gitignore and .git/info/exclude) minus .graphifyignore
+    (gitignore syntax, so git applies it too), lock files and dependency folders, keeping those graphify can parse."""
     from graphify.extract import _get_extractor
-    out = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
-                         capture_output=True, check=True).stdout.decode("utf-8", "replace").split("\0")
-    patterns = []
-    try:
-        from graphify.detect import _SKIP_FILES, _is_noise_dir
-    except Exception:
-        _SKIP_FILES, _is_noise_dir = set(), (lambda part: False)
-    try:
-        from graphify.detect import _load_graphifyignore, _is_ignored
-        if (root / ".graphifyignore").exists():
-            patterns = _load_graphifyignore(root)
-    except Exception:
-        _is_ignored = None
+    from graphify.detect import _SKIP_FILES, _is_noise_dir, _is_sensitive, classify_file, FileType
+    cmd = ["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"]
+    if (root / ".graphifyignore").exists():
+        cmd.append("--exclude-from=" + str(root / ".graphifyignore"))
+    out = subprocess.run(cmd, capture_output=True, check=True).stdout.decode("utf-8", "replace").split("\0")
     files = {}
     for rel in out:
         if not rel or rel.startswith(SKIP_PREFIXES):
@@ -60,13 +54,15 @@ def code_files(root):
         if parts[-1] in _SKIP_FILES or any(_is_noise_dir(x) for x in parts[:-1]):
             continue
         p = root / rel
-        if _get_extractor(p) is None:
+        # the files `graphify update` reads: code, plus documents it has an extractor for, never secret-looking ones
+        if _is_sensitive(p) or _get_extractor(p) is None:
+            continue
+        ft = classify_file(p)
+        if ft is None or (ft != FileType.CODE and ft != FileType.DOCUMENT):
             continue
         try:
             st = p.stat()
         except OSError:
-            continue
-        if patterns and _is_ignored and _is_ignored(p, root, patterns):
             continue
         files[rel] = [st.st_size, int(st.st_mtime_ns // 1_000_000)]
     return files
