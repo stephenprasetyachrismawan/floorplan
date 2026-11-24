@@ -31,6 +31,8 @@ Claude or Codex reads your codebase and draws an interactive map of it. Every pa
 <p align="center"><sub>▶ <a href="https://youtu.be/NTUUzC7L_NQ">Watch the walkthrough</a>: installing Floorplan, then a tour of Brewline, a demo coffee-subscription app built across four repos.</sub></p>
 <p align="center"><b><a href="https://haydenschmitty.github.io/floorplan-demo/">Try the live demo →</a></b> Explore the Brewline map in your browser, no install needed.</p>
 
+> **This fork** adds Odoo-aware maps (models, views, menus, controllers, Odoo health checks), graphify's graph on the map, and updates that re-read only what changed, so the map can run as an always-on service. See [docs/always-on.md](docs/always-on.md).
+
 ## Why Floorplan?
 
 You built an app, probably with a lot of help from AI, and it works. But ask "what happens when someone checks out?" or "what breaks if I change this?" and the honest answer is *no idea*.

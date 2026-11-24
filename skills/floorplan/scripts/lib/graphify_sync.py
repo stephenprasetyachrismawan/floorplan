@@ -374,4 +374,18 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # take graphify's own per-repo lock, so a sync and a `graphify update` never write graph.json at once
+    # (--full runs `graphify update`, which takes it itself)
+    lock = None
+    if "--full" not in sys.argv and "--dry-run" not in sys.argv:
+        try:
+            from graphify.watch import _rebuild_lock
+            target = Path(next((a for a in sys.argv[1:] if not a.startswith("--")), ".")).resolve()
+            lock = _rebuild_lock(target / "graphify-out", blocking=True)
+        except Exception:
+            lock = None
+    if lock is None:
+        sys.exit(main())
+    with lock:
+        code = main()
+    sys.exit(code)
